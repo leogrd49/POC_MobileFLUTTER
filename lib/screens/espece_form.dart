@@ -4,7 +4,6 @@ import 'dart:math';
 import '../services/network_service.dart';
 import '../services/database_service.dart';
 import '../models/espece.dart';
-import '../services/sync_service.dart';
 
 class EspeceForm extends StatefulWidget {
   const EspeceForm({super.key});
@@ -40,16 +39,16 @@ class _EspeceFormState extends State<EspeceForm> {
     final especeId = Random().nextInt(1000000);
     final nom = _nomController.text.trim();
 
-    debugPrint('⭐ Début de la soumission du formulaire');
-    debugPrint('📝 ID généré: $especeId, Nom: $nom');
+    debugPrint('📝 Tentative de soumission - ID: $especeId, Nom: $nom');
 
     try {
       final isConnected = await NetworkService.checkConnectivity();
       debugPrint(
-          '🌐 État de la connexion: ${isConnected ? "Connecté" : "Déconnecté"}');
+          '🌐 État de la connexion: ${isConnected ? "En ligne" : "Hors ligne"}');
 
       if (isConnected) {
-        debugPrint('📡 Mode en ligne - Tentative d\'envoi à l\'API');
+        debugPrint('📡 Mode en ligne - Envoi à l\'API');
+
         final result = await GraphQLProvider.of(context).value.mutate(
               MutationOptions(
                 document: gql(addEspeceMutation),
@@ -61,54 +60,89 @@ class _EspeceFormState extends State<EspeceForm> {
             );
 
         if (result.hasException) {
-          debugPrint('❌ Erreur GraphQL: ${result.exception.toString()}');
-          throw Exception(result.exception?.graphqlErrors.first.message);
+          debugPrint('❌ Erreur API: ${result.exception.toString()}');
+          throw Exception(result.exception?.graphqlErrors.first.message ??
+              'Erreur inconnue');
         }
 
-        debugPrint('✅ Mutation GraphQL réussie');
-        _nomController.clear();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Espèce ajoutée avec succès')),
-          );
-        }
+        debugPrint('✅ Espèce ajoutée avec succès en ligne');
+        _showSuccessMessage('Espèce ajoutée avec succès');
       } else {
         debugPrint('💾 Mode hors ligne - Sauvegarde locale');
-        final espece = Espece(id: especeId, nom: nom);
-        await _databaseService.insertEspece(espece);
 
-        // Vérification immédiate de la sauvegarde
-        final pendingEspeces = await _databaseService.getPendingEspeces();
-        debugPrint(
-            '📊 Nombre d\'espèces en attente après sauvegarde: ${pendingEspeces.length}');
-        debugPrint(
-            '🔍 Dernière espèce sauvegardée: ID=${espece.id}, Nom=${espece.nom}');
+        await _databaseService.insertEspece(
+          Espece(id: especeId, nom: nom),
+        );
 
-        // Tentative de synchronisation immédiate
-        debugPrint('🔄 Tentative de synchronisation immédiate');
-        await SyncService.syncPendingData();
-
-        _nomController.clear();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Données sauvegardées localement. Synchronisation automatique lors de la reconnexion.'),
-              duration: Duration(seconds: 4),
-            ),
-          );
-        }
+        debugPrint('✅ Espèce sauvegardée localement');
+        _showSuccessMessage(
+          'Données sauvegardées localement.\nSynchronisation automatique lors de la reconnexion.',
+          duration: 4,
+        );
       }
+
+      _nomController.clear();
     } catch (e) {
-      debugPrint('❌ Erreur lors de la soumission: $e');
+      debugPrint('❌ Erreur: $e');
       setState(() {
-        _errorMessage = 'Erreur: $e';
+        _errorMessage = e.toString();
       });
+      _showErrorMessage(e.toString());
     } finally {
-      debugPrint('🏁 Fin de la soumission du formulaire');
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _showSuccessMessage(String message, {int duration = 2}) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          duration: Duration(seconds: duration),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  void _showErrorMessage(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  Future<void> _checkPendingEspeces() async {
+    final pendingEspeces = await _databaseService.getPendingEspeces();
+    debugPrint('📊 Espèces en attente: ${pendingEspeces.length}');
+
+    if (pendingEspeces.isEmpty) {
+      _showSuccessMessage('Aucune espèce en attente de synchronisation');
+      return;
+    }
+
+    for (var espece in pendingEspeces) {
+      debugPrint(
+          '🔍 ID: ${espece.id}, Nom: ${espece.nom}, Status: ${espece.syncStatus}');
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '${pendingEspeces.length} espèce(s) en attente de synchronisation'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
   }
 
@@ -130,58 +164,71 @@ class _EspeceFormState extends State<EspeceForm> {
             if (_errorMessage != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
-                child: Text(
-                  _errorMessage!,
-                  style: const TextStyle(color: Colors.red),
-                  textAlign: TextAlign.center,
+                child: Card(
+                  color: Colors.red.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Text(
+                      _errorMessage!,
+                      style: TextStyle(color: Colors.red.shade700),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
                 ),
               ),
-            TextFormField(
-              controller: _nomController,
-              decoration: const InputDecoration(
-                labelText: "Nom de l'espèce",
-                border: OutlineInputBorder(),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      "Ajouter une nouvelle espèce",
+                      style: Theme.of(context).textTheme.titleLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _nomController,
+                      decoration: const InputDecoration(
+                        labelText: "Nom de l'espèce",
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.pets),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return "Le nom ne peut pas être vide";
+                        }
+                        return null;
+                      },
+                      enabled: !_isLoading,
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _isLoading ? null : _submitForm,
+                      icon: _isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.save),
+                      label: Text(_isLoading
+                          ? "Ajout en cours..."
+                          : "Ajouter l'espèce"),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.all(16),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return "Le nom ne peut pas être vide";
-                }
-                return null;
-              },
-              enabled: !_isLoading,
             ),
             const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _isLoading ? null : _submitForm,
-              child: _isLoading
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text("Ajouter l'espèce"),
-            ),
-            const SizedBox(height: 8),
-            // Bouton de test pour vérifier les espèces en attente
-            TextButton(
-              onPressed: () async {
-                final pendingEspeces =
-                    await _databaseService.getPendingEspeces();
-                debugPrint('📊 Espèces en attente: ${pendingEspeces.length}');
-                pendingEspeces.forEach((espece) {
-                  debugPrint(
-                      '🔍 ID: ${espece.id}, Nom: ${espece.nom}, Status: ${espece.syncStatus}');
-                });
-              },
-              child: const Text('Vérifier les espèces en attente'),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () async {
-                debugPrint('🔄 Tentative de synchronisation forcée');
-                await SyncService.forceSyncForTesting();
-              },
-              child: const Text('Forcer la synchronisation'),
+            OutlinedButton.icon(
+              onPressed: _checkPendingEspeces,
+              icon: const Icon(Icons.sync),
+              label: const Text('Vérifier les espèces en attente'),
             ),
           ],
         ),

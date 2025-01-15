@@ -2,17 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'config/graphql_config.dart';
 import 'screens/home_screen.dart';
+import 'services/network_service.dart';
 import 'services/sync_service.dart';
 
 void main() async {
-  // Assurez-vous que les plugins Flutter sont initialisés
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialiser Hive pour GraphQL Flutter
   await initHiveForFlutter();
   
-  // Initialiser le service de synchronisation
-  SyncService.initialize();
+  // Initialiser NetworkService
+  NetworkService.initialize();
+  
+  // Ajouter l'écouteur pour la synchronisation
+  NetworkService.addConnectionListener((isConnected) {
+    if (isConnected) {
+      debugPrint('🔄 Connexion détectée - Lancement synchronisation');
+      SyncService.syncPendingData();
+    }
+  });
   
   runApp(const MyApp());
 }
